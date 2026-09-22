@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
 
 from models import Background, GlobalDefaults, Slide, SlideType, Style
 from renderer import SlideRenderer, apply_brightness_contrast
+from presentation import Presentation
+from sequence_editor import SequenceEditor
 
 
 class MainWindow(QMainWindow):
@@ -40,6 +42,9 @@ class MainWindow(QMainWindow):
         self.current_slide = None
         self.renderer = SlideRenderer()
         self.global_defaults = GlobalDefaults()
+
+        self.presentation = Presentation()
+        self.sequence_window = None
 
         # Values chosen in dialogs (color picker, file picker) that haven't
         # been committed to a slide/default yet -- committed on Save.
@@ -85,12 +90,16 @@ class MainWindow(QMainWindow):
 
         self.add_button = QPushButton("+ Add Slide")
         self.delete_button = QPushButton("Delete Slide")
+        self.sequence_button = QPushButton(
+            "Presentation Sequence"
+        )
 
         self.slide_list = QListWidget()
 
         sidebar_layout.addWidget(title)
         sidebar_layout.addWidget(self.add_button)
         sidebar_layout.addWidget(self.delete_button)
+        sidebar_layout.addWidget(self.sequence_button)
         sidebar_layout.addWidget(self.slide_list)
 
         self.add_button.clicked.connect(self.add_slide)
@@ -434,6 +443,10 @@ class MainWindow(QMainWindow):
         )
         self.contrast_slider.valueChanged.connect(
             self.refresh_background_preview
+        )
+
+        self.sequence_button.clicked.connect(
+            self.open_sequence_editor
         )
 
     # =========================================================
@@ -925,6 +938,27 @@ class MainWindow(QMainWindow):
         )
 
         self.preview_window.show()
+
+    def open_sequence_editor(self):
+
+        self.save_current_slide()
+
+        # If a sequence window is already open, close it first instead of
+        # stacking a second one on top -- avoids confusing duplicate
+        # windows editing the same underlying presentation.
+        if self.sequence_window is not None:
+            self.sequence_window.close()
+            self.sequence_window = None
+
+        self.sequence_window = SequenceEditor(
+            self.slides,
+            self.presentation,
+            self,
+        )
+
+        self.sequence_window.show()
+        self.sequence_window.raise_()
+        self.sequence_window.activateWindow()
 
 
 def main():
