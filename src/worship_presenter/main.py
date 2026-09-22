@@ -953,6 +953,8 @@ class MainWindow(QMainWindow):
         self.sequence_window = SequenceEditor(
             self.slides,
             self.presentation,
+            self.renderer,
+            self.global_defaults,
             self,
         )
 

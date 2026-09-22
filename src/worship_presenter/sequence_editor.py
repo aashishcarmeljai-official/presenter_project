@@ -1,4 +1,5 @@
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -18,13 +19,14 @@ from presentation import (
     available_sequence_tokens,
 )
 
-
 class SequenceEditor(QWidget):
 
     def __init__(
         self,
         slides,
         presentation,
+        renderer,
+        global_defaults,
         parent=None,
     ):
         super().__init__(parent)
@@ -38,6 +40,11 @@ class SequenceEditor(QWidget):
 
         self.slides = slides
         self.presentation = presentation
+        self.renderer = renderer
+        self.global_defaults = global_defaults
+        self.resolved_slides = []
+        self.current_index = 0
+        self.presentation_window = None
 
         self.setWindowTitle(
             "Worship Presenter - Presentation Sequence"
@@ -107,6 +114,18 @@ class SequenceEditor(QWidget):
 
         self.build_button = QPushButton(
             "Build / Resolve Presentation"
+        )
+
+        self.preview_presentation_button = QPushButton(
+            "▶ Preview Presentation"
+        )
+
+        self.preview_presentation_button.clicked.connect(
+            self.preview_presentation
+        )
+
+        main_layout.addWidget(
+            self.preview_presentation_button
         )
 
         self.build_button.clicked.connect(
@@ -405,12 +424,14 @@ class SequenceEditor(QWidget):
             self.slides
         )
 
-        resolved = resolver.resolve_presentation(
-            self.presentation
+        self.resolved_slides = (
+            resolver.resolve_presentation(
+                self.presentation
+            )
         )
 
         for index, slide in enumerate(
-            resolved,
+            self.resolved_slides,
             start=1,
         ):
 
@@ -422,3 +443,104 @@ class SequenceEditor(QWidget):
             self.result_list.addItem(
                 label
             )
+
+        self.current_index = 0
+
+    def preview_presentation(self):
+
+        if not self.resolved_slides:
+            self.build_presentation()
+
+        if not self.resolved_slides:
+            return
+
+        self.current_index = 0
+
+        self.show_current_presentation_slide()
+
+    def show_current_presentation_slide(self):
+
+        slide = self.resolved_slides[
+            self.current_index
+        ]
+
+        self.presentation_window = self.renderer.render(
+            slide,
+            self.global_defaults,
+            1280,
+            720,
+        )
+
+        self.presentation_window.setWindowTitle(
+            f"Worship Presenter - "
+            f"{self.current_index + 1} / "
+            f"{len(self.resolved_slides)}"
+        )
+
+        self.presentation_window.show()
+        self.presentation_window.raise_()
+        self.presentation_window.activateWindow()
+
+        # Enable keyboard control
+        self.presentation_window.keyPressEvent = (
+            self.presentation_key_press
+        )
+
+    def presentation_key_press(
+        self,
+        event,
+    ):
+
+        # Next slide
+        if event.key() in (
+            Qt.Key_Right,
+            Qt.Key_Down,
+            Qt.Key_Space,
+        ):
+
+            self.next_slide()
+            return
+
+        # Previous slide
+        if event.key() in (
+            Qt.Key_Left,
+            Qt.Key_Up,
+        ):
+
+            self.previous_slide()
+            return
+
+        # Exit presentation
+        if event.key() == Qt.Key_Escape:
+
+            if self.presentation_window:
+                self.presentation_window.close()
+
+            return
+
+
+    def next_slide(self):
+
+        if not self.resolved_slides:
+            return
+
+        if (
+            self.current_index
+            < len(self.resolved_slides) - 1
+        ):
+
+            self.current_index += 1
+
+            self.show_current_presentation_slide()
+
+
+    def previous_slide(self):
+
+        if not self.resolved_slides:
+            return
+
+        if self.current_index > 0:
+
+            self.current_index -= 1
+
+            self.show_current_presentation_slide()
