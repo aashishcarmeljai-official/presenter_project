@@ -1,7 +1,8 @@
 import sys
+from dataclasses import replace
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -24,8 +25,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from models import Slide, SlideType
-from renderer import SlideRenderer
+from models import Background, GlobalDefaults, Slide, SlideType, Style
+from renderer import SlideRenderer, apply_brightness_contrast
 
 
 class MainWindow(QMainWindow):
@@ -38,8 +39,25 @@ class MainWindow(QMainWindow):
         self.slides = []
         self.current_slide = None
         self.renderer = SlideRenderer()
+        self.global_defaults = GlobalDefaults()
+
+        # Values chosen in dialogs (color picker, file picker) that haven't
+        # been committed to a slide/default yet -- committed on Save.
+        self._pending_primary_color = self.global_defaults.primary_style.font_color
+        self._pending_secondary_color = self.global_defaults.secondary_style.font_color
+        self._pending_background_path = ""
+
+        # Cache of the original (unadjusted) background image, downscaled
+        # for a fast live preview.
+        self._cached_original_path = None
+        self._cached_thumbnail_original = None
 
         self.build_ui()
+
+        # Reflect the starting global defaults in the editor.
+        self._load_primary_style(self.global_defaults.primary_style)
+        self._load_secondary_style(self.global_defaults.secondary_style)
+        self._apply_background_to_widgets(self.global_defaults.background)
 
     # =========================================================
     # MAIN UI
@@ -113,6 +131,26 @@ class MainWindow(QMainWindow):
         type_layout.addStretch()
 
         editor_layout.addLayout(type_layout)
+
+        # -----------------------------------------------------
+        # STYLE: CUSTOM TOGGLE + SAVE-AS-DEFAULT
+        # -----------------------------------------------------
+
+        style_header_row = QHBoxLayout()
+
+        self.custom_style_checkbox = QCheckBox(
+            "Use custom text formatting for this slide"
+        )
+
+        self.set_style_default_button = QPushButton(
+            "Save as Default Formatting (All Slides)"
+        )
+
+        style_header_row.addWidget(self.custom_style_checkbox)
+        style_header_row.addStretch()
+        style_header_row.addWidget(self.set_style_default_button)
+
+        editor_layout.addLayout(style_header_row)
 
         # -----------------------------------------------------
         # LANGUAGE EDITORS
@@ -230,40 +268,82 @@ class MainWindow(QMainWindow):
         # -----------------------------------------------------
 
         background_group = QGroupBox("Background")
+        background_outer = QVBoxLayout(background_group)
 
-        background_layout = QHBoxLayout(background_group)
+        # Custom toggle + save-as-default
+        bg_header_row = QHBoxLayout()
+
+        self.custom_background_checkbox = QCheckBox(
+            "Use custom background for this slide"
+        )
+
+        self.set_background_default_button = QPushButton(
+            "Save as Default Background (All Slides)"
+        )
+
+        bg_header_row.addWidget(self.custom_background_checkbox)
+        bg_header_row.addStretch()
+        bg_header_row.addWidget(self.set_background_default_button)
+
+        background_outer.addLayout(bg_header_row)
+
+        # Image chooser + filename + live preview thumbnail
+        bg_image_row = QHBoxLayout()
 
         self.background_button = QPushButton(
             "Choose Image"
         )
 
+        self.background_path_label = QLabel("No image selected")
+
+        self.background_preview = QLabel()
+        self.background_preview.setFixedSize(200, 120)
+        self.background_preview.setStyleSheet(
+            "border: 1px solid #888888; background: #222222; color: #aaaaaa;"
+        )
+        self.background_preview.setAlignment(Qt.AlignCenter)
+        self.background_preview.setScaledContents(True)
+        self.background_preview.setText("No Image")
+
+        bg_image_row.addWidget(self.background_button)
+        bg_image_row.addWidget(self.background_path_label, 1)
+        bg_image_row.addWidget(self.background_preview)
+
+        background_outer.addLayout(bg_image_row)
+
+        # Brightness row: slider + numeric spin box
+        brightness_row = QHBoxLayout()
+
         self.brightness_slider = QSlider(Qt.Horizontal)
         self.brightness_slider.setRange(-100, 100)
         self.brightness_slider.setValue(0)
+
+        self.brightness_spin = QSpinBox()
+        self.brightness_spin.setRange(-100, 100)
+        self.brightness_spin.setValue(0)
+
+        brightness_row.addWidget(QLabel("Brightness"))
+        brightness_row.addWidget(self.brightness_slider, 1)
+        brightness_row.addWidget(self.brightness_spin)
+
+        background_outer.addLayout(brightness_row)
+
+        # Contrast row: slider + numeric spin box
+        contrast_row = QHBoxLayout()
 
         self.contrast_slider = QSlider(Qt.Horizontal)
         self.contrast_slider.setRange(0, 200)
         self.contrast_slider.setValue(100)
 
-        background_layout.addWidget(
-            self.background_button
-        )
+        self.contrast_spin = QSpinBox()
+        self.contrast_spin.setRange(0, 200)
+        self.contrast_spin.setValue(100)
 
-        background_layout.addWidget(
-            QLabel("Brightness")
-        )
+        contrast_row.addWidget(QLabel("Contrast"))
+        contrast_row.addWidget(self.contrast_slider, 1)
+        contrast_row.addWidget(self.contrast_spin)
 
-        background_layout.addWidget(
-            self.brightness_slider
-        )
-
-        background_layout.addWidget(
-            QLabel("Contrast")
-        )
-
-        background_layout.addWidget(
-            self.contrast_slider
-        )
+        background_outer.addLayout(contrast_row)
 
         editor_layout.addWidget(background_group)
 
@@ -317,6 +397,45 @@ class MainWindow(QMainWindow):
             self.choose_background
         )
 
+        self.custom_style_checkbox.toggled.connect(
+            self.on_custom_style_toggled
+        )
+
+        self.custom_background_checkbox.toggled.connect(
+            self.on_custom_background_toggled
+        )
+
+        self.set_style_default_button.clicked.connect(
+            self.set_style_as_default
+        )
+
+        self.set_background_default_button.clicked.connect(
+            self.set_background_as_default
+        )
+
+        # Keep slider <-> spin box in sync both ways.
+        self.brightness_slider.valueChanged.connect(
+            self.brightness_spin.setValue
+        )
+        self.brightness_spin.valueChanged.connect(
+            self.brightness_slider.setValue
+        )
+
+        self.contrast_slider.valueChanged.connect(
+            self.contrast_spin.setValue
+        )
+        self.contrast_spin.valueChanged.connect(
+            self.contrast_slider.setValue
+        )
+
+        # Live preview updates whenever brightness/contrast changes.
+        self.brightness_slider.valueChanged.connect(
+            self.refresh_background_preview
+        )
+        self.contrast_slider.valueChanged.connect(
+            self.refresh_background_preview
+        )
+
     # =========================================================
     # SLIDE MANAGEMENT
     # =========================================================
@@ -327,7 +446,7 @@ class MainWindow(QMainWindow):
         self.slides.append(slide)
 
         self.slide_list.addItem(
-            f"{len(self.slides)} - Custom"
+            self._build_slide_label(len(self.slides) - 1, slide)
         )
 
         self.slide_list.setCurrentRow(
@@ -367,6 +486,22 @@ class MainWindow(QMainWindow):
             self.current_slide
         )
 
+    def _build_slide_label(self, index, slide):
+        label = f"{index + 1} - {slide.type.value.title()}"
+
+        tags = []
+
+        if slide.use_custom_style:
+            tags.append("Custom Text")
+
+        if slide.use_custom_background:
+            tags.append("Custom BG")
+
+        if tags:
+            label += " [" + ", ".join(tags) + "]"
+
+        return label
+
     # =========================================================
     # LOAD SLIDE
     # =========================================================
@@ -384,56 +519,123 @@ class MainWindow(QMainWindow):
             )
             self.type_combo.blockSignals(False)
 
-        # Primary
+        # Text content is always per-slide, regardless of custom flags.
         self.primary_text.setPlainText(
             slide.primary.content
         )
 
-        self.primary_font.setCurrentFont(
-            QFont(slide.primary.style.font_family)
-        )
-
-        self.primary_size.setValue(
-            slide.primary.style.font_size
-        )
-
-        self.primary_bold.setChecked(
-            slide.primary.style.bold
-        )
-
-        self.primary_italic.setChecked(
-            slide.primary.style.italic
-        )
-
-        # Secondary
         self.secondary_text.setPlainText(
             slide.secondary.content
         )
 
+        # Style: pull from the slide's own style only if it opted out of
+        # the shared default.
+        self.custom_style_checkbox.blockSignals(True)
+        self.custom_style_checkbox.setChecked(
+            slide.use_custom_style
+        )
+        self.custom_style_checkbox.blockSignals(False)
+
+        primary_style = (
+            slide.primary.style
+            if slide.use_custom_style
+            else self.global_defaults.primary_style
+        )
+
+        secondary_style = (
+            slide.secondary.style
+            if slide.use_custom_style
+            else self.global_defaults.secondary_style
+        )
+
+        self._load_primary_style(primary_style)
+        self._load_secondary_style(secondary_style)
+
+        # Background: same idea.
+        self.custom_background_checkbox.blockSignals(True)
+        self.custom_background_checkbox.setChecked(
+            slide.use_custom_background
+        )
+        self.custom_background_checkbox.blockSignals(False)
+
+        background = (
+            slide.background
+            if slide.use_custom_background
+            else self.global_defaults.background
+        )
+
+        self._apply_background_to_widgets(background)
+
+    def _load_primary_style(self, style: Style):
+        self.primary_font.setCurrentFont(
+            QFont(style.font_family)
+        )
+
+        self.primary_size.setValue(
+            style.font_size
+        )
+
+        self.primary_bold.setChecked(
+            style.bold
+        )
+
+        self.primary_italic.setChecked(
+            style.italic
+        )
+
+        self._pending_primary_color = style.font_color
+
+        self.primary_color_button.setStyleSheet(
+            f"background-color: {style.font_color};"
+        )
+
+    def _load_secondary_style(self, style: Style):
         self.secondary_font.setCurrentFont(
-            QFont(slide.secondary.style.font_family)
+            QFont(style.font_family)
         )
 
         self.secondary_size.setValue(
-            slide.secondary.style.font_size
+            style.font_size
         )
 
         self.secondary_bold.setChecked(
-            slide.secondary.style.bold
+            style.bold
         )
 
         self.secondary_italic.setChecked(
-            slide.secondary.style.italic
+            style.italic
         )
 
-        # Background
-        self.brightness_slider.setValue(
-            slide.background.brightness
+        self._pending_secondary_color = style.font_color
+
+        self.secondary_color_button.setStyleSheet(
+            f"background-color: {style.font_color};"
         )
 
-        self.contrast_slider.setValue(
-            slide.background.contrast
+    def _apply_background_to_widgets(self, background: Background):
+        self.brightness_slider.blockSignals(True)
+        self.brightness_spin.blockSignals(True)
+        self.brightness_slider.setValue(background.brightness)
+        self.brightness_spin.setValue(background.brightness)
+        self.brightness_slider.blockSignals(False)
+        self.brightness_spin.blockSignals(False)
+
+        self.contrast_slider.blockSignals(True)
+        self.contrast_spin.blockSignals(True)
+        self.contrast_slider.setValue(background.contrast)
+        self.contrast_spin.setValue(background.contrast)
+        self.contrast_slider.blockSignals(False)
+        self.contrast_spin.blockSignals(False)
+
+        self._pending_background_path = background.image_path
+
+        self.background_path_label.setText(
+            background.image_path.split("/")[-1]
+            if background.image_path
+            else "No image selected"
         )
+
+        self.refresh_background_preview()
 
     # =========================================================
     # SAVE SLIDE
@@ -448,63 +650,69 @@ class MainWindow(QMainWindow):
         # Type
         slide.type = self.type_combo.currentData()
 
-        # Primary
+        # Text content is always per-slide.
         slide.primary.content = (
             self.primary_text.toPlainText()
         )
 
-        slide.primary.style.font_family = (
-            self.primary_font.currentFont().family()
-        )
-
-        slide.primary.style.font_size = (
-            self.primary_size.value()
-        )
-
-        slide.primary.style.bold = (
-            self.primary_bold.isChecked()
-        )
-
-        slide.primary.style.italic = (
-            self.primary_italic.isChecked()
-        )
-
-        # Secondary
         slide.secondary.content = (
             self.secondary_text.toPlainText()
         )
 
-        slide.secondary.style.font_family = (
+        # Style: write into the slide's own style if custom, otherwise
+        # into the shared global default (which every non-custom slide
+        # will then reflect).
+        slide.use_custom_style = self.custom_style_checkbox.isChecked()
+
+        primary_target = (
+            slide.primary.style
+            if slide.use_custom_style
+            else self.global_defaults.primary_style
+        )
+
+        secondary_target = (
+            slide.secondary.style
+            if slide.use_custom_style
+            else self.global_defaults.secondary_style
+        )
+
+        primary_target.font_family = (
+            self.primary_font.currentFont().family()
+        )
+        primary_target.font_size = self.primary_size.value()
+        primary_target.bold = self.primary_bold.isChecked()
+        primary_target.italic = self.primary_italic.isChecked()
+        primary_target.font_color = self._pending_primary_color
+
+        secondary_target.font_family = (
             self.secondary_font.currentFont().family()
         )
+        secondary_target.font_size = self.secondary_size.value()
+        secondary_target.bold = self.secondary_bold.isChecked()
+        secondary_target.italic = self.secondary_italic.isChecked()
+        secondary_target.font_color = self._pending_secondary_color
 
-        slide.secondary.style.font_size = (
-            self.secondary_size.value()
+        # Background: same pattern.
+        slide.use_custom_background = (
+            self.custom_background_checkbox.isChecked()
         )
 
-        slide.secondary.style.bold = (
-            self.secondary_bold.isChecked()
+        background_target = (
+            slide.background
+            if slide.use_custom_background
+            else self.global_defaults.background
         )
 
-        slide.secondary.style.italic = (
-            self.secondary_italic.isChecked()
-        )
-
-        # Background
-        slide.background.brightness = (
-            self.brightness_slider.value()
-        )
-
-        slide.background.contrast = (
-            self.contrast_slider.value()
-        )
+        background_target.image_path = self._pending_background_path
+        background_target.brightness = self.brightness_slider.value()
+        background_target.contrast = self.contrast_slider.value()
 
         # Update sidebar label
         index = self.slide_list.currentRow()
 
         if index >= 0:
             self.slide_list.item(index).setText(
-                f"{index + 1} - {slide.type.value.title()}"
+                self._build_slide_label(index, slide)
             )
 
     # =========================================================
@@ -523,9 +731,81 @@ class MainWindow(QMainWindow):
 
         if index >= 0:
             self.slide_list.item(index).setText(
-                f"{index + 1} - "
-                f"{self.current_slide.type.value.title()}"
+                self._build_slide_label(index, self.current_slide)
             )
+
+    # =========================================================
+    # CUSTOM-FORMATTING TOGGLES
+    # =========================================================
+
+    def on_custom_style_toggled(self, checked):
+        if self.current_slide is None:
+            return
+
+        slide = self.current_slide
+
+        if checked:
+            # Start this slide's own style as a copy of the current
+            # default, then let the user diverge from there.
+            slide.primary.style = replace(
+                self.global_defaults.primary_style
+            )
+            slide.secondary.style = replace(
+                self.global_defaults.secondary_style
+            )
+
+            self._load_primary_style(slide.primary.style)
+            self._load_secondary_style(slide.secondary.style)
+
+        else:
+            # Drop back to showing (and, on Save, using) the shared default.
+            self._load_primary_style(self.global_defaults.primary_style)
+            self._load_secondary_style(self.global_defaults.secondary_style)
+
+    def on_custom_background_toggled(self, checked):
+        if self.current_slide is None:
+            return
+
+        slide = self.current_slide
+
+        if checked:
+            slide.background = replace(self.global_defaults.background)
+            self._apply_background_to_widgets(slide.background)
+
+        else:
+            self._apply_background_to_widgets(self.global_defaults.background)
+
+    # =========================================================
+    # SAVE AS DEFAULT
+    # =========================================================
+
+    def set_style_as_default(self):
+        self.global_defaults.primary_style = Style(
+            font_family=self.primary_font.currentFont().family(),
+            font_size=self.primary_size.value(),
+            font_color=self._pending_primary_color,
+            bold=self.primary_bold.isChecked(),
+            italic=self.primary_italic.isChecked(),
+        )
+
+        self.global_defaults.secondary_style = Style(
+            font_family=self.secondary_font.currentFont().family(),
+            font_size=self.secondary_size.value(),
+            font_color=self._pending_secondary_color,
+            bold=self.secondary_bold.isChecked(),
+            italic=self.secondary_italic.isChecked(),
+        )
+
+    def set_background_as_default(self):
+        self.global_defaults.background.image_path = (
+            self._pending_background_path
+        )
+        self.global_defaults.background.brightness = (
+            self.brightness_slider.value()
+        )
+        self.global_defaults.background.contrast = (
+            self.contrast_slider.value()
+        )
 
     # =========================================================
     # COLORS
@@ -538,24 +818,18 @@ class MainWindow(QMainWindow):
             return
 
         if language == "primary":
+            self._pending_primary_color = color.name()
+
             self.primary_color_button.setStyleSheet(
                 f"background-color: {color.name()};"
             )
 
-            if self.current_slide:
-                self.current_slide.primary.style.font_color = (
-                    color.name()
-                )
-
         else:
+            self._pending_secondary_color = color.name()
+
             self.secondary_color_button.setStyleSheet(
                 f"background-color: {color.name()};"
             )
-
-            if self.current_slide:
-                self.current_slide.secondary.style.font_color = (
-                    color.name()
-                )
 
     # =========================================================
     # BACKGROUND
@@ -572,10 +846,66 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
 
-        if self.current_slide:
-            self.current_slide.background.image_path = (
-                file_path
-            )
+        self._pending_background_path = file_path
+
+        self.background_path_label.setText(
+            file_path.split("/")[-1]
+        )
+
+        self.refresh_background_preview()
+
+    def _ensure_thumbnail_cache(self, path):
+        if not path:
+            self._cached_thumbnail_original = None
+            self._cached_original_path = None
+            return
+
+        if (
+            self._cached_original_path == path
+            and self._cached_thumbnail_original is not None
+        ):
+            return
+
+        original = QImage(path)
+
+        if original.isNull():
+            self._cached_thumbnail_original = None
+            self._cached_original_path = None
+            return
+
+        # Downscale once per image selection so the live preview stays
+        # fast even while dragging the slider.
+        self._cached_thumbnail_original = original.scaled(
+            self.background_preview.width(),
+            self.background_preview.height(),
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation,
+        )
+
+        self._cached_original_path = path
+
+    def refresh_background_preview(self):
+        self._ensure_thumbnail_cache(self._pending_background_path)
+
+        if self._cached_thumbnail_original is None:
+            self.background_preview.setPixmap(QPixmap())
+            self.background_preview.setText("No Image")
+            return
+
+        adjusted = apply_brightness_contrast(
+            self._cached_thumbnail_original,
+            self.brightness_slider.value(),
+            self.contrast_slider.value(),
+        )
+
+        self.background_preview.setText("")
+        self.background_preview.setPixmap(
+            QPixmap.fromImage(adjusted)
+        )
+
+    # =========================================================
+    # PREVIEW
+    # =========================================================
 
     def preview_slide(self):
         if self.current_slide is None:
@@ -585,6 +915,7 @@ class MainWindow(QMainWindow):
 
         self.preview_window = self.renderer.render(
             self.current_slide,
+            self.global_defaults,
             1280,
             720,
         )
