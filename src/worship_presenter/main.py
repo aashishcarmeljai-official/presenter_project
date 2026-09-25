@@ -29,6 +29,7 @@ from models import Background, GlobalDefaults, Slide, SlideType, Style
 from renderer import SlideRenderer, apply_brightness_contrast
 from presentation import Presentation
 from sequence_editor import SequenceEditor
+from project_io import save_project, load_project
 
 
 class MainWindow(QMainWindow):
@@ -90,6 +91,10 @@ class MainWindow(QMainWindow):
 
         self.add_button = QPushButton("+ Add Slide")
         self.delete_button = QPushButton("Delete Slide")
+
+        self.save_project_button = QPushButton("Save Project")
+        self.open_project_button = QPushButton("Open Project")
+
         self.sequence_button = QPushButton(
             "Presentation Sequence"
         )
@@ -99,10 +104,19 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(title)
         sidebar_layout.addWidget(self.add_button)
         sidebar_layout.addWidget(self.delete_button)
+        sidebar_layout.addWidget(self.save_project_button)
+        sidebar_layout.addWidget(self.open_project_button)
         sidebar_layout.addWidget(self.sequence_button)
         sidebar_layout.addWidget(self.slide_list)
 
         self.add_button.clicked.connect(self.add_slide)
+        self.save_project_button.clicked.connect(
+            self.save_project_dialog
+        )
+
+        self.open_project_button.clicked.connect(
+            self.open_project_dialog
+        )
         self.delete_button.clicked.connect(self.delete_slide)
         self.slide_list.currentRowChanged.connect(
             self.select_slide
@@ -191,11 +205,24 @@ class MainWindow(QMainWindow):
         self.primary_bold = QCheckBox("Bold")
         self.primary_italic = QCheckBox("Italic")
 
+        self.primary_case = QComboBox()
+
+        self.primary_case.addItem("Normal", "normal")
+        self.primary_case.addItem("UPPERCASE", "upper")
+        self.primary_case.addItem("lowercase", "lower")
+        self.primary_case.addItem("Sentence case", "sentence")
+        self.primary_case.addItem("Title Case", "title")
+
         primary_style = QFormLayout()
 
         primary_style.addRow(
             "Font:",
             self.primary_font,
+        )
+
+        primary_style.addRow(
+            "Text Case:",
+            self.primary_case
         )
 
         primary_style.addRow(
@@ -241,11 +268,24 @@ class MainWindow(QMainWindow):
         self.secondary_bold = QCheckBox("Bold")
         self.secondary_italic = QCheckBox("Italic")
 
+        self.secondary_case = QComboBox()
+
+        self.secondary_case.addItem("Normal", "normal")
+        self.secondary_case.addItem("UPPERCASE", "upper")
+        self.secondary_case.addItem("lowercase", "lower")
+        self.secondary_case.addItem("Sentence case", "sentence")
+        self.secondary_case.addItem("Title Case", "title")
+
         secondary_style = QFormLayout()
 
         secondary_style.addRow(
             "Font:",
             self.secondary_font,
+        )
+
+        secondary_style.addRow(
+            "Text Case:",
+            self.secondary_case
         )
 
         secondary_style.addRow(
@@ -596,6 +636,11 @@ class MainWindow(QMainWindow):
             style.italic
         )
 
+        index = self.primary_case.findData(style.case)
+        self.primary_case.setCurrentIndex(
+            index if index >= 0 else 0
+        )
+
         self._pending_primary_color = style.font_color
 
         self.primary_color_button.setStyleSheet(
@@ -617,6 +662,11 @@ class MainWindow(QMainWindow):
 
         self.secondary_italic.setChecked(
             style.italic
+        )
+
+        index = self.secondary_case.findData(style.case)
+        self.secondary_case.setCurrentIndex(
+            index if index >= 0 else 0
         )
 
         self._pending_secondary_color = style.font_color
@@ -696,6 +746,7 @@ class MainWindow(QMainWindow):
         primary_target.bold = self.primary_bold.isChecked()
         primary_target.italic = self.primary_italic.isChecked()
         primary_target.font_color = self._pending_primary_color
+        primary_target.case = self.primary_case.currentData()
 
         secondary_target.font_family = (
             self.secondary_font.currentFont().family()
@@ -704,6 +755,7 @@ class MainWindow(QMainWindow):
         secondary_target.bold = self.secondary_bold.isChecked()
         secondary_target.italic = self.secondary_italic.isChecked()
         secondary_target.font_color = self._pending_secondary_color
+        secondary_target.case = self.secondary_case.currentData()
 
         # Background: same pattern.
         slide.use_custom_background = (
@@ -799,6 +851,7 @@ class MainWindow(QMainWindow):
             font_color=self._pending_primary_color,
             bold=self.primary_bold.isChecked(),
             italic=self.primary_italic.isChecked(),
+            case=self.primary_case.currentData(),
         )
 
         self.global_defaults.secondary_style = Style(
@@ -807,6 +860,7 @@ class MainWindow(QMainWindow):
             font_color=self._pending_secondary_color,
             bold=self.secondary_bold.isChecked(),
             italic=self.secondary_italic.isChecked(),
+            case=self.secondary_case.currentData(),
         )
 
     def set_background_as_default(self):
@@ -938,6 +992,106 @@ class MainWindow(QMainWindow):
         )
 
         self.preview_window.show()
+
+    def save_project_dialog(self):
+        self.save_current_slide()
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Worship Project",
+            "",
+            "Worship Project (*.json)",
+        )
+
+        if not file_path:
+            return
+
+        if not file_path.lower().endswith(".json"):
+            file_path += ".json"
+
+        try:
+            save_project(
+                file_path,
+                self.slides,
+                self.global_defaults,
+                self.presentation,
+            )
+
+            self.statusBar().showMessage(
+                "Project saved successfully.",
+                5000,
+            )
+
+        except Exception as error:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.critical(
+                self,
+                "Save Error",
+                f"Could not save project:\n{error}",
+            )
+
+    def open_project_dialog(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open Worship Project",
+            "",
+            "Worship Project (*.json)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            slides, global_defaults, presentation = load_project(
+                file_path
+            )
+
+            self.slides = slides
+            self.global_defaults = global_defaults
+            self.presentation = presentation
+
+            # Close any open sequence editor.
+            if self.sequence_window is not None:
+                self.sequence_window.close()
+                self.sequence_window = None
+
+            # Refresh the slide list.
+            self.slide_list.clear()
+
+            for index, slide in enumerate(self.slides):
+                self.slide_list.addItem(
+                    self._build_slide_label(index, slide)
+                )
+
+            # Select the first slide, if available.
+            if self.slides:
+                self.slide_list.setCurrentRow(0)
+            else:
+                self.current_slide = None
+                self._load_primary_style(
+                    self.global_defaults.primary_style
+                )
+                self._load_secondary_style(
+                    self.global_defaults.secondary_style
+                )
+                self._apply_background_to_widgets(
+                    self.global_defaults.background
+                )
+
+            self.statusBar().showMessage(
+                "Project loaded successfully.",
+                5000,
+            )
+
+        except Exception as error:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.critical(
+                self,
+                "Open Error",
+                f"Could not open project:\n{error}",
+            )
 
     def open_sequence_editor(self):
 

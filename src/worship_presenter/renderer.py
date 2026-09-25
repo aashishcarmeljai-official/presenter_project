@@ -5,6 +5,21 @@ from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from models import Background, GlobalDefaults, Slide, Style
 
+def apply_text_case(text, case):
+    if case == "upper":
+        return text.upper()
+
+    elif case == "lower":
+        return text.lower()
+
+    elif case == "sentence":
+        return text.capitalize()
+
+    elif case == "title":
+        return text.title()
+
+    return text
+
 
 def apply_brightness_contrast(image: QImage, brightness: int, contrast: int) -> QImage:
     """Return a NEW QImage with brightness/contrast applied.
@@ -114,8 +129,15 @@ class SlideRenderer:
         layout = QVBoxLayout(content)
         layout.setAlignment(Qt.AlignCenter)
 
-        primary_lines = slide.primary.content.splitlines()
-        secondary_lines = slide.secondary.content.splitlines()
+        primary_lines = [
+            apply_text_case(line, primary_style.case)
+            for line in slide.primary.content.splitlines()
+        ]
+
+        secondary_lines = [
+            apply_text_case(line, secondary_style.case)
+            for line in slide.secondary.content.splitlines()
+        ]
 
         # Safety check
         if len(primary_lines) != len(secondary_lines):

@@ -19,6 +19,7 @@ class Style:
     bold: bool = False
     italic: bool = False
     alignment: str = "center"
+    case: str = "normal"
 
 
 @dataclass
