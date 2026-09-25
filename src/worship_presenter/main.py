@@ -8,6 +8,8 @@ from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.enum.shapes import MSO_SHAPE
+from pptx.oxml import parse_xml
+from pptx.oxml.ns import qn, nsdecls
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPixmap
@@ -1224,12 +1226,33 @@ class MainWindow(QMainWindow):
         background_pixmap.save(temp_file.name, "PNG")
         temp_image_paths.append(temp_file.name)
 
-        slide.shapes.add_picture(
-            temp_file.name,
-            0, 0,
-            width=ppt.slide_width,
-            height=ppt.slide_height,
-        )
+        # Register the image as a part of the slide (same call python-pptx
+        # uses internally for add_picture) to get a relationship id, then
+        # wire it into <p:bg><p:bgPr><a:blipFill> directly. This is what
+        # PowerPoint's own "Format Background > Picture or texture fill"
+        # writes -- unlike add_picture, it's not a selectable/movable shape
+        # sitting on the slide, it *is* the slide's background.
+        _, r_id = slide.part.get_or_add_image_part(temp_file.name)
+
+        bg_xml = (
+            '<p:bg %s>'
+            '<p:bgPr>'
+            '<a:blipFill><a:blip r:embed="%s"/>'
+            '<a:stretch><a:fillRect/></a:stretch></a:blipFill>'
+            '<a:effectLst/>'
+            '</p:bgPr>'
+            '</p:bg>'
+        ) % (nsdecls('p', 'a', 'r'), r_id)
+
+        new_bg = parse_xml(bg_xml)
+
+        cSld = slide._element.find(qn('p:cSld'))
+
+        existing_bg = cSld.find(qn('p:bg'))
+        if existing_bg is not None:
+            cSld.remove(existing_bg)
+
+        cSld.insert(0, new_bg)
 
     def _add_mismatch_error_textbox(self, slide):
         # Mirrors the on-screen renderer's behavior when primary/secondary
