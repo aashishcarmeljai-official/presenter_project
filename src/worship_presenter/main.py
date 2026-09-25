@@ -70,6 +70,21 @@ class MainWindow(QMainWindow):
     # =========================================================
 
     def build_ui(self):
+        # Top Menu Bar
+        menu_bar = self.menuBar()
+
+        # File Menu
+        file_menu = menu_bar.addMenu("File")
+
+        open_action = file_menu.addAction("Open Project")
+        save_action = file_menu.addAction("Save Project")
+
+        open_action.triggered.connect(self.open_project_dialog)
+        save_action.triggered.connect(self.save_project_dialog)
+
+        # Presenter Defaults Menu
+        defaults_action = menu_bar.addAction("Presenter Defaults")
+        
         central = QWidget()
         self.setCentralWidget(central)
 
@@ -92,9 +107,6 @@ class MainWindow(QMainWindow):
         self.add_button = QPushButton("+ Add Slide")
         self.delete_button = QPushButton("Delete Slide")
 
-        self.save_project_button = QPushButton("Save Project")
-        self.open_project_button = QPushButton("Open Project")
-
         self.sequence_button = QPushButton(
             "Presentation Sequence"
         )
@@ -104,19 +116,10 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(title)
         sidebar_layout.addWidget(self.add_button)
         sidebar_layout.addWidget(self.delete_button)
-        sidebar_layout.addWidget(self.save_project_button)
-        sidebar_layout.addWidget(self.open_project_button)
         sidebar_layout.addWidget(self.sequence_button)
         sidebar_layout.addWidget(self.slide_list)
 
         self.add_button.clicked.connect(self.add_slide)
-        self.save_project_button.clicked.connect(
-            self.save_project_dialog
-        )
-
-        self.open_project_button.clicked.connect(
-            self.open_project_dialog
-        )
         self.delete_button.clicked.connect(self.delete_slide)
         self.slide_list.currentRowChanged.connect(
             self.select_slide
