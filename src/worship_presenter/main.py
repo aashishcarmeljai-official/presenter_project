@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
         self.current_slide = None
         self.renderer = SlideRenderer()
         self.global_defaults = GlobalDefaults()
+        self.current_project_path = None
 
         self.presentation = Presentation()
 
@@ -89,6 +90,7 @@ class MainWindow(QMainWindow):
 
         open_action = file_menu.addAction("Open Project")
         save_action = file_menu.addAction("Save Project")
+        save_action.setShortcut("Ctrl+S")
 
         open_action.triggered.connect(self.open_project_dialog)
         save_action.triggered.connect(self.save_project_dialog)
@@ -1011,15 +1013,18 @@ class MainWindow(QMainWindow):
     def save_project_dialog(self):
         self.save_current_slide()
 
-        file_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Worship Project",
-            "",
-            "Worship Project (*.json)",
-        )
+        if self.current_project_path:
+            file_path = self.current_project_path
+        else:
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Save Worship Project",
+                "",
+                "Worship Project (*.json)",
+            )
 
-        if not file_path:
-            return
+            if not file_path:
+                return
 
         if not file_path.lower().endswith(".json"):
             file_path += ".json"
@@ -1031,6 +1036,8 @@ class MainWindow(QMainWindow):
                 self.global_defaults,
                 self.presentation,
             )
+
+            self.current_project_path = file_path
 
             self.statusBar().showMessage(
                 "Project saved successfully.",
@@ -1065,6 +1072,7 @@ class MainWindow(QMainWindow):
             self.slides = slides
             self.global_defaults = global_defaults
             self.presentation = presentation
+            self.current_project_path = file_path
 
             # Close any open sequence editor.
             if self.sequence_window is not None:
