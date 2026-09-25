@@ -1,4 +1,6 @@
+import os
 import sys
+import tempfile
 from dataclasses import replace
 
 from pptx import Presentation as PptxPresentation
@@ -32,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from models import Background, GlobalDefaults, Slide, SlideType, Style
-from renderer import SlideRenderer, apply_brightness_contrast
+from renderer import SlideRenderer, apply_brightness_contrast, apply_text_case
 from presentation import Presentation, SequenceResolver
 from sequence_editor import SequenceEditor
 from project_io import save_project, load_project
@@ -1191,8 +1193,118 @@ class MainWindow(QMainWindow):
 
         self.create_powerpoint(file_path)
 
+    # Pixel size used to rasterize backgrounds for export. Matches the
+    # slide's 13.333x7.5in (16:9) aspect ratio so SlideRenderer.create_background
+    # -- the same scale/crop/center/brightness/contrast pipeline used for the
+    # on-screen preview -- can be reused as-is and dropped in full-bleed.
+    _EXPORT_BG_PIXEL_SIZE = (1920, 1080)
+
+    def _set_font_color(self, font, hex_color):
+        color = hex_color.lstrip("#")
+
+        font.color.rgb = RGBColor(
+            int(color[0:2], 16),
+            int(color[2:4], 16),
+            int(color[4:6], 16),
+        )
+
+    def _add_slide_background(self, ppt, slide, background, temp_image_paths):
+        # Reuse the renderer's own background pipeline (scale, center-crop,
+        # brightness/contrast) so the exported slide matches the preview
+        # exactly, including the plain black fallback when there's no image.
+        width_px, height_px = self._EXPORT_BG_PIXEL_SIZE
+
+        background_pixmap = self.renderer.create_background(
+            background, width_px, height_px
+        )
+
+        temp_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        temp_file.close()
+
+        background_pixmap.save(temp_file.name, "PNG")
+        temp_image_paths.append(temp_file.name)
+
+        slide.shapes.add_picture(
+            temp_file.name,
+            0, 0,
+            width=ppt.slide_width,
+            height=ppt.slide_height,
+        )
+
+    def _add_mismatch_error_textbox(self, slide):
+        # Mirrors the on-screen renderer's behavior when primary/secondary
+        # line counts don't match, instead of silently mangling the slide.
+        error_box = slide.shapes.add_textbox(
+            Inches(0.5), Inches(3.0),
+            Inches(12.33), Inches(1.5),
+        )
+
+        paragraph = error_box.text_frame.paragraphs[0]
+        paragraph.text = (
+            "ERROR: Primary and Secondary language "
+            "line counts do not match."
+        )
+        paragraph.alignment = PP_ALIGN.CENTER
+        paragraph.font.size = Pt(28)
+        paragraph.font.bold = True
+        self._set_font_color(paragraph.font, "#FF0000")
+
+    def _add_slide_text(
+        self,
+        slide,
+        primary_lines,
+        secondary_lines,
+        primary_style,
+        secondary_style,
+    ):
+        if not primary_lines and not secondary_lines:
+            return
+
+        textbox = slide.shapes.add_textbox(
+            Inches(0.5), Inches(1.0),
+            Inches(12.33), Inches(5.5),
+        )
+
+        text_frame = textbox.text_frame
+        text_frame.word_wrap = True
+
+        first_paragraph = True
+        last_index = len(primary_lines) - 1
+
+        for index, (primary_line, secondary_line) in enumerate(
+            zip(primary_lines, secondary_lines)
+        ):
+            for content, style in (
+                (primary_line, primary_style),
+                (secondary_line, secondary_style),
+            ):
+                if first_paragraph:
+                    paragraph = text_frame.paragraphs[0]
+                    first_paragraph = False
+                else:
+                    paragraph = text_frame.add_paragraph()
+
+                paragraph.text = content
+                paragraph.alignment = PP_ALIGN.CENTER
+
+                font = paragraph.font
+                font.name = style.font_family
+                font.size = Pt(style.font_size)
+                font.bold = style.bold
+                font.italic = style.italic
+                self._set_font_color(font, style.font_color)
+
+            # Small spacer between line-pairs, but not after the last one --
+            # mirrors the vertical stack of primary/secondary label pairs in
+            # SlideRenderer.render.
+            if index != last_index:
+                spacer = text_frame.add_paragraph()
+                spacer.font.size = Pt(12)
+
     def create_powerpoint(self, file_path):
         from PySide6.QtWidgets import QMessageBox
+
+        temp_image_paths = []
 
         try:
             self.save_current_slide()
@@ -1216,54 +1328,46 @@ class MainWindow(QMainWindow):
                     else self.global_defaults.background
                 )
 
-                if background.image_path:
-                    slide.shapes.add_picture(
-                        background.image_path,
-                        0, 0,
-                        width=ppt.slide_width,
-                        height=ppt.slide_height,
-                    )
+                primary_style = (
+                    slide_data.primary.style
+                    if slide_data.use_custom_style
+                    else self.global_defaults.primary_style
+                )
 
-                for content, style, top, height in [
-                    (
-                        slide_data.primary.content,
-                        slide_data.primary.style
-                        if slide_data.use_custom_style
-                        else self.global_defaults.primary_style,
-                        2.0, 1.5,
-                    ),
-                    (
-                        slide_data.secondary.content,
-                        slide_data.secondary.style
-                        if slide_data.use_custom_style
-                        else self.global_defaults.secondary_style,
-                        4.0, 1.5,
-                    ),
-                ]:
-                    if not content.strip():
-                        continue
+                secondary_style = (
+                    slide_data.secondary.style
+                    if slide_data.use_custom_style
+                    else self.global_defaults.secondary_style
+                )
 
-                    textbox = slide.shapes.add_textbox(
-                        Inches(0.5), Inches(top),
-                        Inches(12.33), Inches(height),
-                    )
+                self._add_slide_background(
+                    ppt, slide, background, temp_image_paths
+                )
 
-                    paragraph = textbox.text_frame.paragraphs[0]
-                    paragraph.text = content
-                    paragraph.alignment = PP_ALIGN.CENTER
+                # Apply the same per-line text-case transform as the live
+                # renderer (upper/lower/sentence/title), which the old
+                # export path never applied.
+                primary_lines = [
+                    apply_text_case(line, primary_style.case)
+                    for line in slide_data.primary.content.splitlines()
+                ]
 
-                    font = paragraph.font
-                    font.name = style.font_family
-                    font.size = Pt(style.font_size)
-                    font.bold = style.bold
-                    font.italic = style.italic
+                secondary_lines = [
+                    apply_text_case(line, secondary_style.case)
+                    for line in slide_data.secondary.content.splitlines()
+                ]
 
-                    color = style.font_color.lstrip("#")
-                    font.color.rgb = RGBColor(
-                        int(color[0:2], 16),
-                        int(color[2:4], 16),
-                        int(color[4:6], 16),
-                    )
+                if len(primary_lines) != len(secondary_lines):
+                    self._add_mismatch_error_textbox(slide)
+                    continue
+
+                self._add_slide_text(
+                    slide,
+                    primary_lines,
+                    secondary_lines,
+                    primary_style,
+                    secondary_style,
+                )
 
             ppt.save(file_path)
 
@@ -1279,6 +1383,13 @@ class MainWindow(QMainWindow):
                 "Export Error",
                 f"Could not export PowerPoint:\n{error}",
             )
+
+        finally:
+            for path in temp_image_paths:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 
 def main():
