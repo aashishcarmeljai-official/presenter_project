@@ -1,6 +1,12 @@
 import sys
 from dataclasses import replace
 
+from pptx import Presentation as PptxPresentation
+from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
+from pptx.enum.text import PP_ALIGN
+from pptx.enum.shapes import MSO_SHAPE
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -27,9 +33,10 @@ from PySide6.QtWidgets import (
 
 from models import Background, GlobalDefaults, Slide, SlideType, Style
 from renderer import SlideRenderer, apply_brightness_contrast
-from presentation import Presentation
+from presentation import Presentation, SequenceResolver
 from sequence_editor import SequenceEditor
 from project_io import save_project, load_project
+
 from presenter_defaults import (
     PresenterDefaultsWindow,
     load_presenter_settings,
@@ -91,6 +98,11 @@ class MainWindow(QMainWindow):
         open_action = file_menu.addAction("Open Project")
         save_action = file_menu.addAction("Save Project")
         save_action.setShortcut("Ctrl+S")
+
+        file_menu.addSeparator()
+
+        export_action = file_menu.addAction("Export PowerPoint")
+        export_action.triggered.connect(self.export_powerpoint)
 
         open_action.triggered.connect(self.open_project_dialog)
         save_action.triggered.connect(self.save_project_dialog)
@@ -1161,6 +1173,111 @@ class MainWindow(QMainWindow):
 
             self.statusBar().showMessage(
                 "Presenter defaults updated.", 5000
+            )
+
+    def export_powerpoint(self):
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export PowerPoint",
+            "",
+            "PowerPoint Presentation (*.pptx)"
+        )
+
+        if not file_path:
+            return
+
+        if not file_path.endswith(".pptx"):
+            file_path += ".pptx"
+
+        self.create_powerpoint(file_path)
+
+    def create_powerpoint(self, file_path):
+        from PySide6.QtWidgets import QMessageBox
+
+        try:
+            self.save_current_slide()
+
+            ppt = PptxPresentation()
+            ppt.slide_width = Inches(13.333)
+            ppt.slide_height = Inches(7.5)
+
+            slides = SequenceResolver(self.slides).resolve_presentation(
+                self.presentation
+            )
+
+            for slide_data in slides:
+                slide = ppt.slides.add_slide(
+                    ppt.slide_layouts[6]
+                )
+
+                background = (
+                    slide_data.background
+                    if slide_data.use_custom_background
+                    else self.global_defaults.background
+                )
+
+                if background.image_path:
+                    slide.shapes.add_picture(
+                        background.image_path,
+                        0, 0,
+                        width=ppt.slide_width,
+                        height=ppt.slide_height,
+                    )
+
+                for content, style, top, height in [
+                    (
+                        slide_data.primary.content,
+                        slide_data.primary.style
+                        if slide_data.use_custom_style
+                        else self.global_defaults.primary_style,
+                        2.0, 1.5,
+                    ),
+                    (
+                        slide_data.secondary.content,
+                        slide_data.secondary.style
+                        if slide_data.use_custom_style
+                        else self.global_defaults.secondary_style,
+                        4.0, 1.5,
+                    ),
+                ]:
+                    if not content.strip():
+                        continue
+
+                    textbox = slide.shapes.add_textbox(
+                        Inches(0.5), Inches(top),
+                        Inches(12.33), Inches(height),
+                    )
+
+                    paragraph = textbox.text_frame.paragraphs[0]
+                    paragraph.text = content
+                    paragraph.alignment = PP_ALIGN.CENTER
+
+                    font = paragraph.font
+                    font.name = style.font_family
+                    font.size = Pt(style.font_size)
+                    font.bold = style.bold
+                    font.italic = style.italic
+
+                    color = style.font_color.lstrip("#")
+                    font.color.rgb = RGBColor(
+                        int(color[0:2], 16),
+                        int(color[2:4], 16),
+                        int(color[4:6], 16),
+                    )
+
+            ppt.save(file_path)
+
+            QMessageBox.information(
+                self,
+                "Export Complete",
+                "PowerPoint exported successfully!",
+            )
+
+        except Exception as error:
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"Could not export PowerPoint:\n{error}",
             )
 
 
