@@ -1,2 +1,3 @@
 .venv
 src/worship_presenter/__pycache__/
+src/worship_presenter/presenter_settings.json

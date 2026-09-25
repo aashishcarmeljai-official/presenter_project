@@ -30,6 +30,10 @@ from renderer import SlideRenderer, apply_brightness_contrast
 from presentation import Presentation
 from sequence_editor import SequenceEditor
 from project_io import save_project, load_project
+from presenter_defaults import (
+    PresenterDefaultsWindow,
+    load_presenter_settings,
+)
 
 
 class MainWindow(QMainWindow):
@@ -45,6 +49,13 @@ class MainWindow(QMainWindow):
         self.global_defaults = GlobalDefaults()
 
         self.presentation = Presentation()
+
+        # Load saved presenter defaults
+        load_presenter_settings(
+            self.global_defaults,
+            self.presentation
+        )
+
         self.sequence_window = None
 
         # Values chosen in dialogs (color picker, file picker) that haven't
@@ -84,6 +95,7 @@ class MainWindow(QMainWindow):
 
         # Presenter Defaults Menu
         defaults_action = menu_bar.addAction("Presenter Defaults")
+        defaults_action.triggered.connect(self.open_presenter_defaults)
         
         central = QWidget()
         self.setCentralWidget(central)
@@ -1118,6 +1130,30 @@ class MainWindow(QMainWindow):
         self.sequence_window.show()
         self.sequence_window.raise_()
         self.sequence_window.activateWindow()
+
+    def open_presenter_defaults(self):
+        self.save_current_slide()
+
+        dialog = PresenterDefaultsWindow(
+            self.global_defaults,
+            self.presentation,
+            self
+        )
+
+        if dialog.exec():
+            self._load_primary_style(
+                self.global_defaults.primary_style
+            )
+            self._load_secondary_style(
+                self.global_defaults.secondary_style
+            )
+            self._apply_background_to_widgets(
+                self.global_defaults.background
+            )
+
+            self.statusBar().showMessage(
+                "Presenter defaults updated.", 5000
+            )
 
 
 def main():
